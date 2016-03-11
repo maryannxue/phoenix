@@ -6,6 +6,9 @@ import org.apache.calcite.rel.RelCollation;
 import org.apache.calcite.rel.RelCollations;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.metadata.BuiltInMetadata;
+import org.apache.calcite.rel.metadata.MetadataDef;
+import org.apache.calcite.rel.metadata.MetadataHandler;
 import org.apache.calcite.rel.metadata.ReflectiveRelMetadataProvider;
 import org.apache.calcite.rel.metadata.RelMdCollation;
 import org.apache.calcite.rel.metadata.RelMetadataProvider;
@@ -22,12 +25,17 @@ import org.apache.phoenix.calcite.rel.PhoenixTableScan;
 
 import com.google.common.collect.ImmutableList;
 
-public class PhoenixRelMdCollation {
+public class PhoenixRelMdCollation implements MetadataHandler<BuiltInMetadata.Collation> {
     public static final RelMetadataProvider SOURCE =
             ReflectiveRelMetadataProvider.reflectiveSource(
                 BuiltInMethod.COLLATIONS.method, new PhoenixRelMdCollation());
 
     private PhoenixRelMdCollation() { }
+
+    @Override
+    public MetadataDef<BuiltInMetadata.Collation> getDef() {
+        return BuiltInMetadata.Collation.DEF;
+    }
 
     public ImmutableList<RelCollation> collations(PhoenixTableScan tableScan, RelMetadataQuery mq) {
         return ImmutableList.copyOf(tableScan.getCollationList());
