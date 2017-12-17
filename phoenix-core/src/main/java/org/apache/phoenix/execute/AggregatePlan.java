@@ -33,6 +33,8 @@ import org.apache.phoenix.compile.StatementContext;
 import org.apache.phoenix.coprocessor.BaseScannerRegionObserver;
 import org.apache.phoenix.coprocessor.GroupedAggregateRegionObserver;
 import org.apache.phoenix.coprocessor.UngroupedAggregateRegionObserver;
+import org.apache.phoenix.execute.visitor.ByteCountVisitor;
+import org.apache.phoenix.execute.visitor.QueryPlanVisitor;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.OrderByExpression;
 import org.apache.phoenix.expression.RowKeyExpression;
@@ -118,24 +120,45 @@ public class AggregatePlan extends BaseQueryPlan {
     @Override
     public Cost getCost() {
         Long byteCount = null;
+        Double bytesBeforeHaving = null;
+        Double bytesAfterHaving = null;
         try {
             byteCount = getEstimatedBytesToScan();
+            AggregatePlan intermediatePlan = new AggregatePlan(
+                    context, statement, tableRef, projection, null, null,
+                    OrderBy.EMPTY_ORDER_BY, parallelIteratorFactory, groupBy, null,
+                    dynamicFilter);
+            bytesBeforeHaving = intermediatePlan.accept(new ByteCountVisitor());
+            if (having == null) {
+                bytesAfterHaving = bytesBeforeHaving;
+            } else {
+                intermediatePlan = new AggregatePlan(
+                        context, statement, tableRef, projection, null, null,
+                        OrderBy.EMPTY_ORDER_BY, parallelIteratorFactory, groupBy, having,
+                        dynamicFilter);
+                bytesAfterHaving = intermediatePlan.accept(new ByteCountVisitor());
+            }
         } catch (SQLException e) {
             // ignored.
         }
+        Double outputBytes = this.accept(new ByteCountVisitor());
 
-        if (byteCount == null) {
+        if (byteCount == null || outputBytes == null
+                || bytesBeforeHaving == null || bytesAfterHaving == null) {
             return Cost.UNKNOWN;
         }
 
         int parallelLevel = CostUtil.estimateParallelLevel(
                 true, context.getConnection().getQueryServices());
-        Cost cost = CostUtil.estimateAggregateCost(byteCount,
-                groupBy, aggregators.getEstimatedByteSize(), parallelLevel);
+        Cost cost = new Cost(0, 0, byteCount);
+        Cost aggCost = CostUtil.estimateAggregateCost(
+                byteCount, bytesBeforeHaving, groupBy, parallelLevel);
+        cost = cost.plus(aggCost);
         if (!orderBy.getOrderByExpressions().isEmpty()) {
-            double outputBytes = CostUtil.estimateAggregateOutputBytes(
-                    byteCount, groupBy, aggregators.getEstimatedByteSize());
-            Cost orderByCost = CostUtil.estimateOrderByCost(outputBytes, parallelLevel);
+            parallelLevel = CostUtil.estimateParallelLevel(
+                    false, context.getConnection().getQueryServices());
+            Cost orderByCost = CostUtil.estimateOrderByCost(
+                    bytesAfterHaving, outputBytes, parallelLevel);
             cost = cost.plus(orderByCost);
         }
         return cost;
@@ -302,6 +325,11 @@ public class AggregatePlan extends BaseQueryPlan {
     @Override
     public boolean useRoundRobinIterator() throws SQLException {
         return false;
+    }
+
+    @Override
+    public <T> T accept(QueryPlanVisitor<T> visitor) {
+        return visitor.visit(this);
     }
 
 }

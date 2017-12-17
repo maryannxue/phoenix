@@ -102,7 +102,6 @@ public class QueryCompiler {
     private final ParallelIteratorFactory parallelIteratorFactory;
     private final SequenceManager sequenceManager;
     private final boolean projectTuples;
-    private final boolean useSortMergeJoin;
     private final boolean noChildParentJoinOptimization;
 
     public QueryCompiler(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver) throws SQLException {
@@ -122,7 +121,6 @@ public class QueryCompiler {
         this.parallelIteratorFactory = parallelIteratorFactory;
         this.sequenceManager = sequenceManager;
         this.projectTuples = projectTuples;
-        this.useSortMergeJoin = select.getHint().hasHint(Hint.USE_SORT_MERGE_JOIN);
         this.noChildParentJoinOptimization = select.getHint().hasHint(Hint.NO_CHILD_PARENT_JOIN_OPTIMIZATION);
         if (statement.getConnection().getQueryServices().getLowestClusterHBaseVersion() >= PhoenixDatabaseMetaData.ESSENTIAL_FAMILY_VERSION_THRESHOLD) {
             this.scan.setAttribute(LOAD_COLUMN_FAMILIES_ON_DEMAND_ATTR, QueryConstants.TRUE);
@@ -255,8 +253,9 @@ public class QueryCompiler {
             return new TupleProjectionPlan(plan, new TupleProjector(plan.getProjector()), table.compilePostFilterExpression(context));
         }
 
-        boolean[] starJoinVector;
-        if (!this.useSortMergeJoin && (starJoinVector = joinTable.getStarJoinVector()) != null) {
+        JoinCompiler.Strategy strategy = joinTable.getJoinStrategy();
+        if (strategy == JoinCompiler.Strategy.HASH_BUILD_RIGHT) {
+            boolean[] starJoinVector = joinTable.getStarJoinVector();
             Table table = joinTable.getTable();
             PTable initialProjectedTable;
             TableRef tableRef;
@@ -307,7 +306,7 @@ public class QueryCompiler {
                 JoinSpec joinSpec = joinSpecs.get(i);
                 context.setResolver(FromCompiler.getResolverForProjectedTable(projectedTable, context.getConnection(), query.getUdfParseNodes()));
                 joinIds[i] = new ImmutableBytesPtr(emptyByteArray); // place-holder
-                Pair<List<Expression>, List<Expression>> joinConditions = joinSpec.compileJoinConditions(context, subContexts[i], JoinCompiler.Strategy.HASH_BUILD_RIGHT);
+                Pair<List<Expression>, List<Expression>> joinConditions = joinSpec.compileJoinConditions(context, subContexts[i], strategy);
                 joinExpressions[i] = joinConditions.getFirst();
                 List<Expression> hashExpressions = joinConditions.getSecond();
                 Pair<Expression, Expression> keyRangeExpressions = new Pair<Expression, Expression>(null, null);
@@ -336,10 +335,7 @@ public class QueryCompiler {
 
         JoinSpec lastJoinSpec = joinSpecs.get(joinSpecs.size() - 1);
         JoinType type = lastJoinSpec.getType();
-        if (!this.useSortMergeJoin 
-                && (type == JoinType.Right || type == JoinType.Inner) 
-                && lastJoinSpec.getJoinTable().getJoinSpecs().isEmpty()
-                && lastJoinSpec.getJoinTable().getTable().isFlat()) {
+        if (strategy == JoinCompiler.Strategy.HASH_BUILD_LEFT) {
             JoinTable rhsJoinTable = lastJoinSpec.getJoinTable();
             Table rhsTable = rhsJoinTable.getTable();
             JoinTable lhsJoin = joinTable.getSubJoinTableWithoutPostFilters();
@@ -369,7 +365,7 @@ public class QueryCompiler {
             context.setCurrentTable(rhsTableRef);
             context.setResolver(FromCompiler.getResolverForProjectedTable(rhsProjTable, context.getConnection(), rhs.getUdfParseNodes()));
             ImmutableBytesPtr[] joinIds = new ImmutableBytesPtr[] {new ImmutableBytesPtr(emptyByteArray)};
-            Pair<List<Expression>, List<Expression>> joinConditions = lastJoinSpec.compileJoinConditions(lhsCtx, context, JoinCompiler.Strategy.HASH_BUILD_LEFT);
+            Pair<List<Expression>, List<Expression>> joinConditions = lastJoinSpec.compileJoinConditions(lhsCtx, context, strategy);
             List<Expression> joinExpressions = joinConditions.getSecond();
             List<Expression> hashExpressions = joinConditions.getFirst();
             boolean needsMerge = lhsJoin.hasPostReference();
@@ -422,7 +418,7 @@ public class QueryCompiler {
         QueryPlan rhsPlan = compileJoinQuery(rhsCtx, binds, rhsJoin, true, true, rhsOrderBy);
         PTable rhsProjTable = rhsCtx.getResolver().getTables().get(0).getTable();
         
-        Pair<List<Expression>, List<Expression>> joinConditions = lastJoinSpec.compileJoinConditions(type == JoinType.Right ? rhsCtx : lhsCtx, type == JoinType.Right ? lhsCtx : rhsCtx, JoinCompiler.Strategy.SORT_MERGE);
+        Pair<List<Expression>, List<Expression>> joinConditions = lastJoinSpec.compileJoinConditions(type == JoinType.Right ? rhsCtx : lhsCtx, type == JoinType.Right ? lhsCtx : rhsCtx, strategy);
         List<Expression> lhsKeyExpressions = type == JoinType.Right ? joinConditions.getSecond() : joinConditions.getFirst();
         List<Expression> rhsKeyExpressions = type == JoinType.Right ? joinConditions.getFirst() : joinConditions.getSecond();
         

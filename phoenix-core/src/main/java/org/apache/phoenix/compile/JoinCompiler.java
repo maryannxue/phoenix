@@ -71,6 +71,8 @@ import org.apache.phoenix.parse.TableNodeVisitor;
 import org.apache.phoenix.parse.TableWildcardParseNode;
 import org.apache.phoenix.parse.UDFParseNode;
 import org.apache.phoenix.parse.WildcardParseNode;
+import org.apache.phoenix.query.QueryServices;
+import org.apache.phoenix.query.QueryServicesOptions;
 import org.apache.phoenix.schema.ColumnNotFoundException;
 import org.apache.phoenix.schema.ColumnRef;
 import org.apache.phoenix.schema.LocalIndexDataColumnRef;
@@ -126,6 +128,8 @@ public class JoinCompiler {
     private final ColumnResolver origResolver;
     private final boolean useStarJoin;
     private final Map<ColumnRef, ColumnRefType> columnRefs;
+    private final boolean useSortMergeJoin;
+    private final boolean costBased;
 
 
     private JoinCompiler(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver) {
@@ -134,6 +138,9 @@ public class JoinCompiler {
         this.origResolver = resolver;
         this.useStarJoin = !select.getHint().hasHint(Hint.NO_STAR_JOIN);
         this.columnRefs = new HashMap<ColumnRef, ColumnRefType>();
+        this.useSortMergeJoin = select.getHint().hasHint(Hint.USE_SORT_MERGE_JOIN);
+        this.costBased = statement.getConnection().getQueryServices().getProps().getBoolean(
+                QueryServices.COST_BASED_OPTIMIZER_ENABLED, QueryServicesOptions.DEFAULT_COST_BASED_OPTIMIZER_ENABLED);
     }
 
     public static JoinTable compile(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver) throws SQLException {
@@ -364,6 +371,24 @@ public class JoinCompiler {
                 filtersCombined.addAll(table.getPostFilters());
             }
             return JoinCompiler.compilePostFilterExpression(context, filtersCombined);
+        }
+
+        public Strategy getJoinStrategy() {
+            if (!useSortMergeJoin && getStarJoinVector() != null) {
+
+                return Strategy.HASH_BUILD_RIGHT;
+            }
+
+            JoinSpec lastJoinSpec = joinSpecs.get(joinSpecs.size() - 1);
+            JoinType type = lastJoinSpec.getType();
+            if (!useSortMergeJoin
+                    && (type == JoinType.Right || type == JoinType.Inner)
+                    && lastJoinSpec.getJoinTable().getJoinSpecs().isEmpty()
+                    && lastJoinSpec.getJoinTable().getTable().isFlat()) {
+                return Strategy.HASH_BUILD_LEFT;
+            }
+
+            return Strategy.SORT_MERGE;
         }
 
         /**

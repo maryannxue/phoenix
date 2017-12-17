@@ -30,51 +30,35 @@ import org.apache.phoenix.query.QueryServices;
  */
 public class CostUtil {
 
-    // An estimate of the ratio of result data from group-by against the input data.
-    private final static double GROUPING_FACTOR = 0.1;
-
     // Io operations conducted in intermediate evaluations like sorting or aggregation
     // should be counted twice since they usually involve both read and write.
     private final static double IO_COST_MULTIPLIER = 2.0;
 
     /**
-     * Estimate the number of output bytes of an aggregate.
-     * @param byteCount the number of input bytes
-     * @param groupBy the compiled GroupBy object
-     * @param aggregatorsSize the byte size of aggregators
-     * @return the output byte count
-     */
-    public static double estimateAggregateOutputBytes(
-            double byteCount, GroupBy groupBy, int aggregatorsSize) {
-        if (groupBy.isUngroupedAggregate()) {
-            return aggregatorsSize;
-        }
-        return byteCount * GROUPING_FACTOR;
-    }
-
-    /**
      * Estimate the cost of an aggregate.
-     * @param byteCount the number of input bytes
+     * @param inputBytes the number of input bytes
+     * @param outputBytes the number of output bytes
      * @param groupBy the compiled GroupBy object
-     * @param aggregatorsSize the byte size of aggregators
      * @param parallelLevel number of parallel workers or threads
      * @return the cost
      */
     public static Cost estimateAggregateCost(
-            double byteCount, GroupBy groupBy, int aggregatorsSize, int parallelLevel) {
-        double outputBytes = estimateAggregateOutputBytes(byteCount, groupBy, aggregatorsSize);
-        double orderedFactor = groupBy.isOrderPreserving() ? 0.2 : 1.0;
-        return new Cost(0, 0, outputBytes * orderedFactor * IO_COST_MULTIPLIER / parallelLevel);
+            double inputBytes, double outputBytes, GroupBy groupBy, int parallelLevel) {
+        double hashMapOverhead = groupBy.isOrderPreserving() ? 0 : (outputBytes * IO_COST_MULTIPLIER);
+        return new Cost(0, 0, (inputBytes + hashMapOverhead) / parallelLevel);
     }
 
     /**
      * Estimate the cost of an order-by
-     * @param byteCount the number of input bytes
+     * @param inputBytes the number of input bytes
+     * @param outputBytes the number of output bytes, which may be different from inputBytes
+     *                    depending on whether there is a LIMIT
      * @param parallelLevel number of parallel workers or threads
      * @return the cost
      */
-    public static Cost estimateOrderByCost(double byteCount, int parallelLevel) {
-        return new Cost(0, 0, byteCount * IO_COST_MULTIPLIER / parallelLevel);
+    public static Cost estimateOrderByCost(double inputBytes, double outputBytes, int parallelLevel) {
+        return new Cost(0, 0,
+                (inputBytes + outputBytes * IO_COST_MULTIPLIER) / parallelLevel);
     }
 
     /**

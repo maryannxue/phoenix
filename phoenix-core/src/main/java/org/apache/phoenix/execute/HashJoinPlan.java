@@ -48,6 +48,8 @@ import org.apache.phoenix.compile.StatementContext;
 import org.apache.phoenix.compile.WhereCompiler;
 import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
+import org.apache.phoenix.execute.visitor.ByteCountVisitor;
+import org.apache.phoenix.execute.visitor.QueryPlanVisitor;
 import org.apache.phoenix.expression.Determinism;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.InListExpression;
@@ -291,35 +293,50 @@ public class HashJoinPlan extends DelegateQueryPlan {
         return statement;
     }
 
+    public HashJoinInfo getJoinInfo() {
+        return joinInfo;
+    }
+
+    public SubPlan[] getSubPlans() {
+        return subPlans;
+    }
+
+    @Override
+    public <T> T accept(QueryPlanVisitor<T> visitor) {
+        return visitor.visit(this);
+    }
+
     @Override
     public Cost getCost() {
-        Long byteCount = null;
-        try {
-            byteCount = getEstimatedBytesToScan();
-        } catch (SQLException e) {
-            // ignored.
-        }
-
-        if (byteCount == null) {
+        Double outputBytes = this.accept(new ByteCountVisitor());
+        if (outputBytes == null) {
             return Cost.UNKNOWN;
         }
+        Double rhsByteSum = 0.0;
+        for (SubPlan subPlan : subPlans) {
+            Double rhsBytes = subPlan.getInnerPlan().accept(new ByteCountVisitor());
+            if (rhsBytes == null) {
+                return Cost.UNKNOWN;
+            }
+            rhsByteSum += rhsBytes;
+        }
 
-        Cost cost = new Cost(0, 0, byteCount);
-        Cost lhsCost = delegate.getCost();
+        Cost cost = new Cost(0, 0, outputBytes);
         if (keyRangeExpressions != null) {
             // The selectivity of the dynamic rowkey filter.
             // TODO replace the constant with an estimate value.
             double selectivity = 0.01;
-            lhsCost = lhsCost.multiplyBy(selectivity);
+            cost = cost.multiplyBy(selectivity);
         }
+        Cost hashMapCost = new Cost(0, 0, rhsByteSum);
         Cost rhsCost = Cost.ZERO;
         for (SubPlan subPlan : subPlans) {
             rhsCost = rhsCost.plus(subPlan.getInnerPlan().getCost());
         }
-        return cost.plus(lhsCost).plus(rhsCost);
+        return cost.plus(hashMapCost).plus(rhsCost);
     }
 
-    protected interface SubPlan {
+    public interface SubPlan {
         public ServerCache execute(HashJoinPlan parent) throws SQLException;
         public void postProcess(ServerCache result, HashJoinPlan parent) throws SQLException;
         public List<String> getPreSteps(HashJoinPlan parent) throws SQLException;
