@@ -373,6 +373,25 @@ public class JoinCompiler {
             return JoinCompiler.compilePostFilterExpression(context, filtersCombined);
         }
 
+        /**
+         * Decide join strategy based on the following rules.
+         * 1. If BUILD_RIGHT is possible:
+         *    a) If cost_based is false, do BUILD_RIGHT.
+         *    b) Otherwise, let lhs_size be the size of the first table, and
+         *       let rhs_size be the overall size of all other tables, then:
+         *       i)  If rhs_size exceeds the hash_join_size_limit, continue to 2.
+         *       ii) Otherwise: if there's only one RHS table and it's an inner
+         *           join and lhs_size < rhs_size, do BUILD_LEFT; otherwise do
+         *           BUILD_RIGHT.
+         * 2. If BUILD_LEFT is possible:
+         *    a) If cost_based is false, do BUILD_LEFT.
+         *    b) Otherwise, let rhs_size be the size of the last table, and
+         *       let lhs_size be the size of the joined result of all preceeding
+         *       tables, then:
+         *       i)  If lhs_size exceeds the hash_join_size_limit, continue to 3.
+         *       ii) Otherwise, do BUILD_LEFT.
+         * 3. Do SORT_MERGE.
+         */
         public Strategy getJoinStrategy() {
             if (!useSortMergeJoin && getStarJoinVector() != null) {
 
